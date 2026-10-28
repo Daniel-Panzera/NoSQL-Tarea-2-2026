@@ -1,0 +1,6 @@
+# Fuerza saltos de línea LF en el repo y en el checkout (los contenedores son Linux)
+* text=auto eol=lf
+
+*.pdf binary
+*.png binary
+*.jpg binary
