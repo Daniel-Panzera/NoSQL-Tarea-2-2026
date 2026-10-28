@@ -54,11 +54,18 @@ services:
     environment:
       CASSANDRA_HOSTS: cassandra
       CASSANDRA_KEYSPACE: shopexpress
+      # Clave HMAC para seudonimizar la exportación (valor de demo; en producción va en un secret)
+      PSEUDONIMO_CLAVE: demo-shopexpress-2026
     ports:
       - "8001:8000"
     depends_on:
       cassandra-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   catalogo-service:
     build: ./catalogo-service
@@ -88,7 +95,7 @@ services:
       mongo:
         condition: service_healthy
       usuarios-service:
-        condition: service_started
+        condition: service_healthy
       catalogo-service:
         condition: service_started
 
