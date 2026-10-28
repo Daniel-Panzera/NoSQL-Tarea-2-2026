@@ -1,0 +1,97 @@
+name: shopexpress
+
+services:
+  # ---------- Bases de datos ----------
+
+  cassandra:
+    image: cassandra:4.1
+    environment:
+      CASSANDRA_CLUSTER_NAME: shopexpress
+      # Limita la memoria para que corra en una notebook
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 128M
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  # Contenedor de un solo uso: crea keyspace y tablas, y termina
+  cassandra-init:
+    image: cassandra:4.1
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    volumes:
+      - ./infra/cassandra/init.cql:/init.cql:ro
+    entrypoint: ["cqlsh", "cassandra", "-f", "/init.cql"]
+    restart: "no"
+
+  mongo:
+    image: mongo:7
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+      - ./infra/mongo/init-replica.js:/scripts/init-replica.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "/scripts/init-replica.js"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
+
+  # ---------- Microservicios ----------
+
+  usuarios-service:
+    build: ./usuarios-service
+    environment:
+      CASSANDRA_HOSTS: cassandra
+      CASSANDRA_KEYSPACE: shopexpress
+    ports:
+      - "8001:8000"
+    depends_on:
+      cassandra-init:
+        condition: service_completed_successfully
+
+  catalogo-service:
+    build: ./catalogo-service
+    environment:
+      CASSANDRA_HOSTS: cassandra
+      CASSANDRA_KEYSPACE: shopexpress
+      MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
+      MONGO_DB: catalogo_inventario
+    ports:
+      - "8002:8000"
+    depends_on:
+      cassandra-init:
+        condition: service_completed_successfully
+      mongo:
+        condition: service_healthy
+
+  pedidos-service:
+    build: ./pedidos-service
+    environment:
+      MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
+      MONGO_DB: pedidos
+      USUARIOS_URL: http://usuarios-service:8000
+      CATALOGO_URL: http://catalogo-service:8000
+    ports:
+      - "8003:8000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      usuarios-service:
+        condition: service_started
+      catalogo-service:
+        condition: service_started
+
+volumes:
+  cassandra_data:
+  mongo_data:
