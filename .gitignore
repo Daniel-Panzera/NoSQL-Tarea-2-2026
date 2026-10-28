@@ -1,0 +1,25 @@
+# Consigna de la tarea (no se versiona)
+*.pdf
+
+# Secretos y configuración local
+.env
+.env.*
+!.env.example
+
+# Dependencias y builds
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+target/
+bin/
+obj/
+dist/
+build/
+
+# IDE / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
