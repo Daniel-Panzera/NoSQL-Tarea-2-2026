@@ -81,6 +81,11 @@ services:
         condition: service_completed_successfully
       mongo:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   pedidos-service:
     build: ./pedidos-service
@@ -97,7 +102,7 @@ services:
       usuarios-service:
         condition: service_healthy
       catalogo-service:
-        condition: service_started
+        condition: service_healthy
 
 volumes:
   cassandra_data:
