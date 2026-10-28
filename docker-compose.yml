@@ -94,8 +94,17 @@ services:
       MONGO_DB: pedidos
       USUARIOS_URL: http://usuarios-service:8000
       CATALOGO_URL: http://catalogo-service:8000
+      # Pasarela de pago simulada: rechaza montos mayores a este límite
+      PAGO_LIMITE_APROBACION: "5000"
+      # Habilita el header X-Simular-Fallo para mostrar compensaciones en la demo
+      SIMULACION_FALLOS_HABILITADA: "true"
     ports:
       - "8003:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     depends_on:
       mongo:
         condition: service_healthy
