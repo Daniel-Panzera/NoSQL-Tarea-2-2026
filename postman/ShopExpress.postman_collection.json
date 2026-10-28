@@ -1,0 +1,720 @@
+{
+  "info": {
+    "name": "ShopExpress - NoSQL Tarea 2 2026",
+    "description": "Pruebas de los 3 microservicios y de los escenarios de la SAGA.\n\nEjecutar las carpetas en orden (o toda la colección con el Collection Runner): las primeras requests guardan el id del usuario y de los productos en variables de la colección, y las siguientes los usan.\n\nRequiere el sistema levantado con `docker compose up -d --build`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "usuarios_url", "value": "http://localhost:8001" },
+    { "key": "catalogo_url", "value": "http://localhost:8002" },
+    { "key": "pedidos_url", "value": "http://localhost:8003" },
+    { "key": "nro_documento", "value": "" },
+    { "key": "usuario_id", "value": "" },
+    { "key": "producto_id", "value": "" },
+    { "key": "producto_caro_id", "value": "" },
+    { "key": "idempotency_key", "value": "" },
+    { "key": "pedido_id", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "1. Usuarios",
+      "item": [
+        {
+          "name": "Crear usuario",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Documento al azar para poder repetir la colección sin chocar con el 409",
+                  "pm.collectionVariables.set('nro_documento', String(Math.floor(10000000 + Math.random() * 89999999)));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const usuario = pm.response.json();",
+                  "pm.test('Devuelve el id y las direcciones', () => {",
+                  "    pm.expect(usuario.id).to.match(/^usr_/);",
+                  "    pm.expect(usuario.direcciones).to.have.lengthOf(2);",
+                  "});",
+                  "pm.collectionVariables.set('usuario_id', usuario.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tipo_documento\": \"CI\",\n  \"nro_documento\": \"{{nro_documento}}\",\n  \"nombre\": \"Juan\",\n  \"apellido\": \"Pérez\",\n  \"email\": \"juan.perez@correo.com\",\n  \"direcciones\": [\n    { \"calle\": \"Av. 18 de Julio 1234\", \"ciudad\": \"Montevideo\", \"codigo_postal\": \"11100\" },\n    { \"calle\": \"Rambla 456\", \"ciudad\": \"Punta del Este\", \"codigo_postal\": \"20100\" }\n  ]\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{usuarios_url}}/api/usuarios",
+            "description": "Guarda el perfil en Cassandra. La unicidad del documento se garantiza con una lightweight transaction (IF NOT EXISTS)."
+          }
+        },
+        {
+          "name": "Crear usuario con documento duplicado (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict: el documento ya está registrado', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tipo_documento\": \"CI\",\n  \"nro_documento\": \"{{nro_documento}}\",\n  \"nombre\": \"Otro\",\n  \"apellido\": \"Usuario\",\n  \"email\": \"otro@correo.com\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{usuarios_url}}/api/usuarios"
+          }
+        },
+        {
+          "name": "Crear usuario con email inválido (422)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable Entity', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tipo_documento\": \"CI\",\n  \"nro_documento\": \"11111111\",\n  \"nombre\": \"Sin\",\n  \"apellido\": \"Email\",\n  \"email\": \"esto-no-es-un-email\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{usuarios_url}}/api/usuarios"
+          }
+        },
+        {
+          "name": "Obtener usuario",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Es el usuario creado', () => {",
+                  "    pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('usuario_id'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{usuarios_url}}/api/usuarios/{{usuario_id}}",
+            "description": "Lectura con consistencia LOCAL_ONE (prioridad AP)."
+          }
+        },
+        {
+          "name": "Obtener usuario inexistente (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{usuarios_url}}/api/usuarios/usr_noexiste"
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Catálogo",
+      "item": [
+        {
+          "name": "Crear producto (stock 10)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const producto = pm.response.json();",
+                  "pm.test('Stock inicial 10', () => pm.expect(producto.stock_disponible).to.eql(10));",
+                  "pm.collectionVariables.set('producto_id', producto.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nombre\": \"Teclado mecánico\",\n  \"descripcion\": \"Switches rojos, layout español\",\n  \"categoria\": \"perifericos\",\n  \"precio\": 25.50,\n  \"stock\": 10\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{catalogo_url}}/api/productos",
+            "description": "El stock se guarda en MongoDB (fuente de verdad) y la ficha en Cassandra (modelo de lectura)."
+          }
+        },
+        {
+          "name": "Crear producto caro (para superar el límite de pago)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('producto_caro_id', pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nombre\": \"Notebook gamer\",\n  \"descripcion\": \"16 GB RAM, RTX\",\n  \"categoria\": \"computadoras\",\n  \"precio\": 3000.00,\n  \"stock\": 5\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{catalogo_url}}/api/productos"
+          }
+        },
+        {
+          "name": "Obtener producto (stock eventual, Cassandra)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Stock leído de Cassandra', () => {",
+                  "    pm.expect(pm.response.json().fuente_stock).to.eql('cassandra (eventual)');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{catalogo_url}}/api/productos/{{producto_id}}"
+          }
+        },
+        {
+          "name": "Obtener producto (stock consistente, MongoDB)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Stock leído de MongoDB', () => {",
+                  "    pm.expect(pm.response.json().fuente_stock).to.eql('mongodb (consistente)');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{catalogo_url}}/api/productos/{{producto_id}}?consistente=true",
+              "host": ["{{catalogo_url}}"],
+              "path": ["api", "productos", "{{producto_id}}"],
+              "query": [{ "key": "consistente", "value": "true" }]
+            }
+          }
+        },
+        {
+          "name": "Listar productos por categoría",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Incluye el producto creado', () => {",
+                  "    const ids = pm.response.json().map(p => p.id);",
+                  "    pm.expect(ids).to.include(pm.collectionVariables.get('producto_id'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{catalogo_url}}/api/productos?categoria=perifericos",
+              "host": ["{{catalogo_url}}"],
+              "path": ["api", "productos"],
+              "query": [{ "key": "categoria", "value": "perifericos" }]
+            },
+            "description": "Consulta resuelta por la tabla productos_por_categoria (partición por categoría)."
+          }
+        },
+        {
+          "name": "Obtener producto inexistente (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{catalogo_url}}/api/productos/prod_noexiste"
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Pedidos - escenarios SAGA",
+      "item": [
+        {
+          "name": "Éxito: pedido CONFIRMADO (201)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('idempotency_key', 'pedido-' + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const pedido = pm.response.json();",
+                  "pm.test('Estado CONFIRMADO y total 51.00', () => {",
+                  "    pm.expect(pedido.estado).to.eql('CONFIRMADO');",
+                  "    pm.expect(pedido.total).to.eql(51);",
+                  "});",
+                  "pm.test('Recorrió los 7 pasos de la cadena', () => {",
+                  "    pm.expect(pedido.saga.map(p => p.paso)).to.eql([",
+                  "        'ValidadorDeDatos', 'ValidadorDeUsuario', 'ValidadorDeStock', 'ReservaDeStock',",
+                  "        'ProcesadorDePago', 'ConfirmadorDePedido', 'RegistradorDeHistorial'",
+                  "    ]);",
+                  "    pm.expect(pedido.saga.every(p => p.estado === 'COMPLETADO')).to.be.true;",
+                  "});",
+                  "pm.collectionVariables.set('pedido_id', pedido.pedido_id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{idempotency_key}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"usuario_id\": \"{{usuario_id}}\",\n  \"metodo_pago\": \"TARJETA_CREDITO\",\n  \"items\": [\n    { \"producto_id\": \"{{producto_id}}\", \"cantidad\": 2 }\n  ]\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{pedidos_url}}/api/pedidos",
+            "description": "Camino feliz: reserva el stock (10 → 8), cobra, confirma y registra la compra en el historial del usuario."
+          }
+        },
+        {
+          "name": "Reintento con la misma Idempotency-Key (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK: no se crea otro pedido', () => pm.response.to.have.status(200));",
+                  "pm.test('Devuelve el mismo pedido', () => {",
+                  "    pm.expect(pm.response.json().pedido_id).to.eql(pm.collectionVariables.get('pedido_id'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{idempotency_key}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"usuario_id\": \"{{usuario_id}}\",\n  \"metodo_pago\": \"TARJETA_CREDITO\",\n  \"items\": [\n    { \"producto_id\": \"{{producto_id}}\", \"cantidad\": 2 }\n  ]\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{pedidos_url}}/api/pedidos",
+            "description": "Simula que el cliente reintenta (por ejemplo, tras un timeout): no se cobra ni se descuenta stock dos veces."
+          }
+        },
+        {
+          "name": "Datos inválidos: cantidad 0 (422, RECHAZADO)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable Entity', () => pm.response.to.have.status(422));",
+                  "const pedido = pm.response.json();",
+                  "pm.test('RECHAZADO por el ValidadorDeDatos', () => {",
+                  "    pm.expect(pedido.estado).to.eql('RECHAZADO');",
+                  "    pm.expect(pedido.saga[pedido.saga.length - 1]).to.include({ paso: 'ValidadorDeDatos', estado: 'FALLIDO' });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"usuario_id\": \"{{usuario_id}}\",\n  \"metodo_pago\": \"TARJETA_CREDITO\",\n  \"items\": [\n    { \"producto_id\": \"{{producto_id}}\", \"cantidad\": 0 }\n  ]\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{pedidos_url}}/api/pedidos"
+          }
+        },
+        {
+          "name": "Usuario inexistente (404, RECHAZADO)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "const pedido = pm.response.json();",
+                  "pm.test('RECHAZADO por el ValidadorDeUsuario', () => {",
+                  "    pm.expect(pedido.estado).to.eql('RECHAZADO');",
+                  "    pm.expect(pedido.saga[pedido.saga.length - 1]).to.include({ paso: 'ValidadorDeUsuario', estado: 'FALLIDO' });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"usuario_id\": \"usr_noexiste\",\n  \"metodo_pago\": \"TARJETA_CREDITO\",\n  \"items\": [\n    { \"producto_id\": \"{{producto_id}}\", \"cantidad\": 1 }\n  ]\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{pedidos_url}}/api/pedidos"
+          }
+        },
+        {
+          "name": "Stock insuficiente (409, RECHAZADO)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "const pedido = pm.response.json();",
+                  "pm.test('RECHAZADO por el ValidadorDeStock', () => {",
+                  "    pm.expect(pedido.estado).to.eql('RECHAZADO');",
+                  "    pm.expect(pedido.saga[pedido.saga.length - 1]).to.include({ paso: 'ValidadorDeStock', estado: 'FALLIDO' });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"usuario_id\": \"{{usuario_id}}\",\n  \"metodo_pago\": \"TARJETA_CREDITO\",\n  \"items\": [\n    { \"producto_id\": \"{{producto_id}}\", \"cantidad\": 99 }\n  ]\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{pedidos_url}}/api/pedidos"
+          }
+        },
+        {
+          "name": "Pago rechazado: tarjeta (402, CANCELADO)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('402 Payment Required', () => pm.response.to.have.status(402));",
+                  "const pedido = pm.response.json();",
+                  "pm.test('CANCELADO: se compensó la reserva de stock', () => {",
+                  "    pm.expect(pedido.estado).to.eql('CANCELADO');",
+                  "    pm.expect(pedido.pago.estado_pago).to.eql('RECHAZADO');",
+                  "    pm.expect(pedido.saga[pedido.saga.length - 1]).to.include({ paso: 'ReservaDeStock', estado: 'COMPENSADO' });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"usuario_id\": \"{{usuario_id}}\",\n  \"metodo_pago\": \"TARJETA_RECHAZADA\",\n  \"items\": [\n    { \"producto_id\": \"{{producto_id}}\", \"cantidad\": 1 }\n  ]\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{pedidos_url}}/api/pedidos",
+            "description": "TARJETA_RECHAZADA es un método de prueba que la pasarela simulada siempre rechaza."
+          }
+        },
+        {
+          "name": "Pago rechazado: supera el límite de 5000 (402, CANCELADO)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('402 Payment Required', () => pm.response.to.have.status(402));",
+                  "const pedido = pm.response.json();",
+                  "pm.test('CANCELADO con total 6000', () => {",
+                  "    pm.expect(pedido.estado).to.eql('CANCELADO');",
+                  "    pm.expect(pedido.total).to.eql(6000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"usuario_id\": \"{{usuario_id}}\",\n  \"metodo_pago\": \"TARJETA_CREDITO\",\n  \"items\": [\n    { \"producto_id\": \"{{producto_caro_id}}\", \"cantidad\": 2 }\n  ]\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{pedidos_url}}/api/pedidos"
+          }
+        },
+        {
+          "name": "Fallo al confirmar: reembolso + liberación (503, CANCELADO)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('503 Service Unavailable', () => pm.response.to.have.status(503));",
+                  "const pedido = pm.response.json();",
+                  "pm.test('CANCELADO y pago REEMBOLSADO', () => {",
+                  "    pm.expect(pedido.estado).to.eql('CANCELADO');",
+                  "    pm.expect(pedido.pago.estado_pago).to.eql('REEMBOLSADO');",
+                  "});",
+                  "pm.test('Compensaciones en orden inverso: primero el pago, después la reserva', () => {",
+                  "    const compensados = pedido.saga.filter(p => p.estado === 'COMPENSADO').map(p => p.paso);",
+                  "    pm.expect(compensados).to.eql(['ProcesadorDePago', 'ReservaDeStock']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Simular-Fallo", "value": "confirmacion" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"usuario_id\": \"{{usuario_id}}\",\n  \"metodo_pago\": \"TARJETA_CREDITO\",\n  \"items\": [\n    { \"producto_id\": \"{{producto_id}}\", \"cantidad\": 3 }\n  ]\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{pedidos_url}}/api/pedidos",
+            "description": "El header X-Simular-Fallo hace fallar el ConfirmadorDePedido después de reservar y cobrar, para mostrar las compensaciones."
+          }
+        },
+        {
+          "name": "Obtener pedido confirmado",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Sigue CONFIRMADO', () => pm.expect(pm.response.json().estado).to.eql('CONFIRMADO'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{pedidos_url}}/api/pedidos/{{pedido_id}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Verificaciones posteriores",
+      "item": [
+        {
+          "name": "Stock final: 8 (solo descontó el pedido confirmado)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Stock 8: las compensaciones devolvieron el stock de los pedidos cancelados', () => {",
+                  "    pm.expect(pm.response.json().stock_disponible).to.eql(8);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{catalogo_url}}/api/productos/{{producto_id}}?consistente=true",
+              "host": ["{{catalogo_url}}"],
+              "path": ["api", "productos", "{{producto_id}}"],
+              "query": [{ "key": "consistente", "value": "true" }]
+            }
+          }
+        },
+        {
+          "name": "Reserva del pedido confirmado (CONFIRMADA)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Reserva CONFIRMADA', () => pm.expect(pm.response.json().estado).to.eql('CONFIRMADA'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{catalogo_url}}/api/inventario/reservas/{{pedido_id}}",
+            "description": "Endpoint interno del inventario que usa el orquestador SAGA."
+          }
+        },
+        {
+          "name": "Historial de compras del usuario",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('El historial tiene solo el pedido confirmado', () => {",
+                  "    const historial = pm.response.json().historial_compras;",
+                  "    pm.expect(historial).to.have.lengthOf(1);",
+                  "    pm.expect(historial[0].pedido_id).to.eql(pm.collectionVariables.get('pedido_id'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{usuarios_url}}/api/usuarios/{{usuario_id}}"
+          }
+        },
+        {
+          "name": "Exportar usuarios seudonimizados (JSON)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Sin datos personales identificables', () => {",
+                  "    const registro = pm.response.json()[0];",
+                  "    pm.expect(registro.id_seudonimo).to.match(/^anon_[0-9a-f]{16}$/);",
+                  "    pm.expect(registro).to.not.have.any.keys('id', 'apellido', 'email', 'nro_documento', 'direcciones');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{usuarios_url}}/api/usuarios/exportar?formato=json",
+              "host": ["{{usuarios_url}}"],
+              "path": ["api", "usuarios", "exportar"],
+              "query": [{ "key": "formato", "value": "json" }]
+            }
+          }
+        },
+        {
+          "name": "Exportar usuarios seudonimizados (CSV)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Devuelve un CSV', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('text/csv'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{usuarios_url}}/api/usuarios/exportar?formato=csv",
+              "host": ["{{usuarios_url}}"],
+              "path": ["api", "usuarios", "exportar"],
+              "query": [{ "key": "formato", "value": "csv" }]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
