@@ -4,13 +4,14 @@ Sistema de microservicios para la plataforma ficticia de comercio electrónico *
 Tres servicios en **Python + FastAPI**, dos bases NoSQL (**Cassandra** y **MongoDB**), un **orquestador SAGA**
 que procesa cada pedido a través de una **Chain of Responsibility**, y **CQRS** para el stock.
 
-| Servicio | Puerto | Base de datos | Responsabilidad |
-|---|---|---|---|
-| `usuarios-service` | 8001 | Cassandra | Perfiles, direcciones, historial de compras, exportación seudonimizada |
-| `catalogo-service` | 8002 | Cassandra (lectura) + MongoDB (stock) | Productos, categorías, precios, inventario y reservas |
-| `pedidos-service` | 8003 | MongoDB | Pedidos y pagos; orquestador SAGA + Chain of Responsibility |
+| Servicio | Puerto | Swagger | Base de datos | Responsabilidad |
+|---|---|---|---|---|
+| `usuarios-service` | 8001 | [localhost:8001/docs](http://localhost:8001/docs) | Cassandra | Perfiles, direcciones, historial de compras, exportación seudonimizada |
+| `catalogo-service` | 8002 | [localhost:8002/docs](http://localhost:8002/docs) | Cassandra (lectura) + MongoDB (stock) | Productos, categorías, precios, inventario y reservas |
+| `pedidos-service` | 8003 | [localhost:8003/docs](http://localhost:8003/docs) | MongoDB | Pedidos y pagos; orquestador SAGA + Chain of Responsibility |
 
-La documentación interactiva (Swagger) de cada servicio está en `http://localhost:<puerto>/docs`.
+Con el sistema levantado, cada servicio tiene su documentación interactiva (Swagger) en `/docs`: desde ahí se
+pueden probar todos los endpoints en el navegador (ver [Probar desde el navegador](#probar-desde-el-navegador-swagger)).
 
 ---
 
@@ -381,6 +382,83 @@ docker compose logs -f pedidos-service
    siguientes los usan.
 3. Cada request tiene tests que verifican el código HTTP y el estado esperado del pedido.
 
+### Probar desde el navegador (Swagger)
+
+Con el sistema levantado, abrir en el navegador (copiar y pegar la dirección si el enlace no abre):
+
+| Servicio | Swagger |
+|---|---|
+| Usuarios | <http://localhost:8001/docs> |
+| Catálogo e Inventario | <http://localhost:8002/docs> |
+| Pedidos y Pagos | <http://localhost:8003/docs> |
+
+1. Desplegar un endpoint, tocar **Try it out**, completar el JSON del cuerpo y tocar **Execute**.
+2. La respuesta aparece abajo, con el código HTTP y el cuerpo.
+3. Los ids que devuelve un servicio (usuario, producto) hay que copiarlos a mano en el pedido.
+4. En `POST /api/pedidos`, los headers `Idempotency-Key` y `X-Simular-Fallo` aparecen como campos opcionales
+   arriba del cuerpo. Si se dejan vacíos, el pedido se procesa normalmente.
+
+> Swagger descarga su interfaz desde `cdn.jsdelivr.net`: si la página queda en blanco, revisar la conexión a
+> internet o desactivar el bloqueador de anuncios. Si el navegador no encuentra `localhost`, probar con
+> `http://127.0.0.1:8003/docs`.
+
+#### Header `Idempotency-Key`: evitar pedidos duplicados
+
+Protege contra los reintentos del cliente. Por ejemplo: el usuario toca "Comprar", el pago pasa, pero se corta
+la conexión antes de recibir la respuesta y la app reintenta. Sin este header se crearía un segundo pedido y se
+cobraría dos veces. El cliente manda un identificador único por intento de compra (cualquier texto) y el
+servicio lo guarda con un índice único en MongoDB.
+
+**Cómo llenarlo en Swagger** (`POST /api/pedidos` → *Try it out*):
+
+| Campo | Valor |
+|---|---|
+| `idempotency-key` | `compra-prueba-001` |
+| `x-simular-fallo` | *(vacío)* |
+| Cuerpo | `{ "usuario_id": "<id del usuario>", "metodo_pago": "TARJETA_CREDITO", "items": [ { "producto_id": "<id del producto>", "cantidad": 1 } ] }` |
+
+**Qué pasa:**
+
+1. **Primer *Execute*:** `201 Created`, pedido `CONFIRMADO`, se descuenta 1 de stock y se cobra.
+2. **Segundo *Execute* con la misma clave:** `200 OK` con **el mismo `pedido_id`**. No se crea otro pedido,
+   no se descuenta stock y no se cobra de nuevo.
+3. **Con otra clave (por ejemplo `compra-prueba-002`):** se crea un pedido nuevo (`201`).
+
+Si dos reintentos con la misma clave llegan exactamente al mismo tiempo, el índice único hace que solo uno se
+guarde y el otro recibe el pedido existente.
+
+#### Header `X-Simular-Fallo`: forzar las compensaciones de la SAGA
+
+Es una herramienta de **demo**, no algo que usaría un cliente real. Hace fallar a propósito el paso
+`ConfirmadorDePedido`, es decir, **después** de reservar el stock y de cobrar, que es el peor caso: hay que
+deshacer dos pasos.
+
+**Cómo llenarlo en Swagger:**
+
+| Campo | Valor |
+|---|---|
+| `idempotency-key` | *(vacío, o una clave nueva)* |
+| `x-simular-fallo` | `confirmacion` (en minúscula y sin tilde; otro valor da `422`) |
+| Cuerpo | El mismo de arriba, por ejemplo con `"cantidad": 3` |
+
+**Qué pasa:**
+
+1. Respuesta `503 Service Unavailable` con el pedido en estado **`CANCELADO`** y `pago.estado_pago` en
+   **`REEMBOLSADO`**.
+2. En el array `saga` se ven los pasos completados, el `ConfirmadorDePedido` en `FALLIDO` y las
+   compensaciones **en orden inverso**:
+   ```text
+   ReservaDeStock        COMPLETADO   Stock reservado en inventario
+   ProcesadorDePago      COMPLETADO   Pago aprobado (tx_...)
+   ConfirmadorDePedido   FALLIDO      Fallo simulado al confirmar el pedido (header X-Simular-Fallo)
+   ProcesadorDePago      COMPENSADO   Pago reembolsado (tx_...)
+   ReservaDeStock        COMPENSADO   Reserva liberada, stock devuelto al inventario
+   ```
+3. El stock vuelve al valor anterior: se puede comprobar con `GET /api/productos/{id}?consistente=true`.
+
+El header funciona solo porque el `docker-compose.yml` define `SIMULACION_FALLOS_HABILITADA: "true"`. En
+producción la variable iría en `false` y el header se ignoraría, para que nadie pueda provocar fallos desde afuera.
+
 ### Probar desde PowerShell
 
 ```powershell
@@ -447,7 +525,7 @@ docker compose down -v
 
 ## 7. Referencia de endpoints
 
-### Usuarios — `http://localhost:8001`
+### Usuarios — `http://localhost:8001` · [Swagger](http://localhost:8001/docs)
 
 | Método | Ruta | Descripción | Respuestas |
 |---|---|---|---|
@@ -456,7 +534,7 @@ docker compose down -v
 | `GET` | `/api/usuarios/exportar?formato=json\|csv` | Exportación seudonimizada | `200` |
 | `POST` | `/api/usuarios/{id}/compras` | Registrar compra (uso interno de la SAGA) | `201`, `404` |
 
-### Catálogo e Inventario — `http://localhost:8002`
+### Catálogo e Inventario — `http://localhost:8002` · [Swagger](http://localhost:8002/docs)
 
 | Método | Ruta | Descripción | Respuestas |
 |---|---|---|---|
@@ -468,7 +546,7 @@ docker compose down -v
 | `POST` | `/api/inventario/reservas/{pedido_id}/confirmar` | Confirmar reserva (SAGA) | `200`, `404`, `409` |
 | `DELETE` | `/api/inventario/reservas/{pedido_id}` | Liberar reserva (compensación) | `200`, `404` |
 
-### Pedidos y Pagos — `http://localhost:8003`
+### Pedidos y Pagos — `http://localhost:8003` · [Swagger](http://localhost:8003/docs)
 
 | Método | Ruta | Descripción | Respuestas |
 |---|---|---|---|
